@@ -4525,7 +4525,8 @@ public abstract class BaseConnectorTest
             assertUpdate("DELETE FROM " + table.getName() + " WHERE EXISTS(SELECT 1)", "SELECT count(*) - 1 FROM orders");
         }
 
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_delete_correlated_exists_subquery", "AS SELECT * FROM nation")) {
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated, test delete correlated exists subquery
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_dce_subquery", "AS SELECT * FROM nation")) {
             // delete using correlated EXISTS subquery
             assertUpdate(format("DELETE FROM %1$s WHERE EXISTS(SELECT regionkey FROM region WHERE regionkey = %1$s.regionkey AND name LIKE 'A%%')", table.getName()), 15);
             assertQuery(
@@ -4533,7 +4534,8 @@ public abstract class BaseConnectorTest
                     "SELECT * FROM nation WHERE regionkey IN (SELECT regionkey FROM region WHERE name NOT LIKE 'A%')");
         }
 
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_delete_correlated_exists_subquery", "AS SELECT * FROM nation")) {
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated, test delete correlated exists subquery
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_dce_subquery", "AS SELECT * FROM nation")) {
             // delete using correlated IN subquery
             assertUpdate(format("DELETE FROM %1$s WHERE regionkey IN (SELECT regionkey FROM region WHERE regionkey = %1$s.regionkey AND name LIKE 'A%%')", table.getName()), 15);
             assertQuery(
@@ -4932,7 +4934,8 @@ public abstract class BaseConnectorTest
             return;
         }
 
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_update_with_predicates", "(a INT, b INT, c INT)")) {
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_update_preds_", "(a INT, b INT, c INT)")) {
             String tableName = table.getName();
             assertUpdate("INSERT INTO " + tableName + " VALUES (1, 2, 3), (11, 12, 13), (21, 22, 23)", 3);
             assertUpdate("UPDATE " + tableName + " SET a = a - 1 WHERE c = 3", 1);
@@ -4995,7 +4998,8 @@ public abstract class BaseConnectorTest
             return;
         }
 
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_update_all_columns", "(a INT, b INT, c INT)")) {
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_update_all_", "(a INT, b INT, c INT)")) {
             String tableName = table.getName();
             assertUpdate("INSERT INTO " + tableName + " VALUES (1, 2, 3), (11, 12, 13), (21, 22, 23)", 3);
             assertUpdate("UPDATE " + tableName + " SET a = a + 1, b = b - 1, c = c * 2", 3);
@@ -5655,8 +5659,9 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE) && hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA));
 
-        String target = "merge_target_with_ctas_" + randomNameSuffix();
-        String source = "merge_source_with_ctas_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String target = "test_md_ctas_target_" + randomNameSuffix();
+        String source = "test_me_ctas_source_" + randomNameSuffix();
         @Language("SQL") String createTableSql = """
                 CREATE TABLE %s AS
                 SELECT * FROM (
@@ -5750,8 +5755,9 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE));
 
-        String targetTable = "merge_various_target_" + randomNameSuffix();
-        String sourceTable = "merge_various_source_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String targetTable = "test_mv_target_" + randomNameSuffix();
+        String sourceTable = "test_mv_source_" + randomNameSuffix();
         assertUpdate(createTableForWrites(format("CREATE TABLE %s (customer VARCHAR, purchase VARCHAR)", targetTable)));
 
         assertUpdate(format("INSERT INTO %s (customer, purchase) VALUES ('Dave', 'dates'), ('Lou', 'limes'), ('Carol', 'candles')", targetTable), 3);
@@ -5930,8 +5936,9 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE));
 
-        String targetTable = "merge_all_columns_updated_target_" + randomNameSuffix();
-        String sourceTable = "merge_all_columns_updated_source_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String targetTable = "test_macu_target_" + randomNameSuffix();
+        String sourceTable = "test_macu_source_" + randomNameSuffix();
         assertUpdate(createTableForWrites(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR)", targetTable)));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Dave', 11, 'Devon'), ('Aaron', 5, 'Antioch'), ('Bill', 7, 'Buena'), ('Carol', 3, 'Cambridge')", targetTable), 4);
@@ -5955,8 +5962,9 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE));
 
-        String targetTable = "merge_all_matches_deleted_target_" + randomNameSuffix();
-        String sourceTable = "merge_all_matches_deleted_source_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String targetTable = "test_mamd_target_" + randomNameSuffix();
+        String sourceTable = "test_mamd_source_" + randomNameSuffix();
         assertUpdate(createTableForWrites(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR)", targetTable)));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Aaron', 5, 'Antioch'), ('Bill', 7, 'Buena'), ('Carol', 3, 'Cambridge'), ('Dave', 11, 'Devon')", targetTable), 4);
@@ -5980,8 +5988,9 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE));
 
-        String targetTable = "merge_multiple_fail_target_" + randomNameSuffix();
-        String sourceTable = "merge_multiple_fail_source_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String targetTable = "test_mmf_target_" + randomNameSuffix();
+        String sourceTable = "test_mmf_source_" + randomNameSuffix();
 
         assertUpdate(createTableForWrites(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR)", targetTable)));
 
@@ -6009,7 +6018,8 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE));
 
-        String targetTable = "merge_strange_capitalization_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String targetTable = "test_mqwsc_target_" + randomNameSuffix();
         assertUpdate(createTableForWrites(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR)", targetTable)));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Aaron', 5, 'Antioch'), ('Bill', 7, 'Buena'), ('Carol', 3, 'Cambridge'), ('Dave', 11, 'Devon')", targetTable), 4);
@@ -6032,8 +6042,9 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE));
 
-        String targetTable = "test_without_aliases_target_" + randomNameSuffix();
-        String sourceTable = "test_without_aliases_source_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String targetTable = "test_mwta_target_" + randomNameSuffix();
+        String sourceTable = "test_mwta_source_" + randomNameSuffix();
         assertUpdate(createTableForWrites(format("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR)", targetTable)));
 
         assertUpdate(format("INSERT INTO %s (customer, purchases, address) VALUES ('Aaron', 5, 'Antioch'), ('Bill', 7, 'Buena'), ('Carol', 3, 'Cambridge'), ('Dave', 11, 'Devon')", targetTable), 4);
@@ -6060,8 +6071,9 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE));
 
-        String targetTable = "merge_predicates_target_" + randomNameSuffix();
-        String sourceTable = "merge_predicates_source_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String targetTable = "test_mwup_target_" + randomNameSuffix();
+        String sourceTable = "test_mwup_source_" + randomNameSuffix();
 
         assertUpdate(createTableForWrites(format("CREATE TABLE %s (id INT, customer VARCHAR, purchases INT, address VARCHAR)", targetTable)));
 
@@ -6108,8 +6120,9 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE));
 
-        String targetTable = "merge_predicates_target_" + randomNameSuffix();
-        String sourceTable = "merge_predicates_source_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String targetTable = "test_mwsup_target_" + randomNameSuffix();
+        String sourceTable = "test_mwsup_source_" + randomNameSuffix();
 
         assertUpdate(createTableForWrites(format("CREATE TABLE %s (id INT, customer VARCHAR, purchases INT, address VARCHAR)", targetTable)));
 
@@ -6194,7 +6207,8 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE) && hasBehavior(SUPPORTS_NOT_NULL_CONSTRAINT));
 
-        String targetTable = "merge_non_nullable_target_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String targetTable = "test_mnnc_target_" + randomNameSuffix();
 
         assertUpdate(createTableForWrites(format("CREATE TABLE %s (nation_name VARCHAR, region_name VARCHAR NOT NULL)", targetTable)));
 
@@ -6230,7 +6244,8 @@ public abstract class BaseConnectorTest
     {
         skipTestUnless(hasBehavior(SUPPORTS_MERGE) && hasBehavior(SUPPORTS_NOT_NULL_CONSTRAINT));
 
-        String targetTable = "merge_update_columns_reversed_" + randomNameSuffix();
+        // TODO (https://github.com/trinodb/trino/issues/5901) Use longer table name once Oracle version is updated
+        String targetTable = "test_mucr_target_" + randomNameSuffix();
         assertUpdate(createTableForWrites("CREATE TABLE " + targetTable + " (a, b, c) AS VALUES (1, 2, 3)"), 1);
         assertUpdate("""
                         MERGE INTO %s t USING (VALUES(1)) AS s(a) ON (t.a = s.a)

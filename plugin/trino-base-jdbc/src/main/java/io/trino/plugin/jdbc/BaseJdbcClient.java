@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.jdbc;
 
+import com.google.common.base.Joiner;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -31,6 +32,7 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitSource;
+import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.FixedSplitSource;
 import io.trino.spi.connector.JoinStatistics;
@@ -43,6 +45,7 @@ import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.statistics.TableStatistics;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.CharType;
+import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 import jakarta.annotation.Nullable;
@@ -78,6 +81,7 @@ import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static com.google.common.collect.Iterators.tryFind;
 import static io.trino.plugin.base.TemporaryTables.generateTemporaryTableName;
 import static io.trino.plugin.jdbc.CaseSensitivity.CASE_INSENSITIVE;
 import static io.trino.plugin.jdbc.CaseSensitivity.CASE_SENSITIVE;
@@ -102,6 +106,7 @@ import static java.util.stream.Collectors.joining;
 public abstract class BaseJdbcClient
         implements JdbcClient
 {
+    public static final String MERGE_ROW_ID = "$merge_row_id";
     private static final Logger log = Logger.get(BaseJdbcClient.class);
 
     static final Type TRINO_PAGE_SINK_ID_COLUMN_TYPE = BigintType.BIGINT;
@@ -294,61 +299,86 @@ public abstract class BaseJdbcClient
         }
         checkArgument(tableHandle.isNamedRelation(), "Cannot get columns for %s", tableHandle);
         verify(tableHandle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(tableHandle));
-        SchemaTableName schemaTableName = tableHandle.getRequiredNamedRelation().getSchemaTableName();
-        RemoteTableName remoteTableName = tableHandle.getRequiredNamedRelation().getRemoteTableName();
 
         try (Connection connection = connectionFactory.openConnection(session);
                 ResultSet resultSet = getColumns(tableHandle, connection.getMetaData())) {
-            Map<String, CaseSensitivity> caseSensitivityMapping = getCaseSensitivityForColumns(session, connection, tableHandle);
-            int allColumns = 0;
-            List<JdbcColumnHandle> columns = new ArrayList<>();
-            while (resultSet.next()) {
-                // skip if table doesn't match expected
-                if (!(Objects.equals(remoteTableName, getRemoteTable(resultSet)))) {
-                    continue;
-                }
-                allColumns++;
-                String columnName = resultSet.getString("COLUMN_NAME");
-                JdbcTypeHandle typeHandle = new JdbcTypeHandle(
-                        getInteger(resultSet, "DATA_TYPE").orElseThrow(() -> new IllegalStateException("DATA_TYPE is null")),
-                        Optional.ofNullable(resultSet.getString("TYPE_NAME")),
-                        getInteger(resultSet, "COLUMN_SIZE"),
-                        getInteger(resultSet, "DECIMAL_DIGITS"),
-                        Optional.empty(),
-                        Optional.ofNullable(caseSensitivityMapping.get(columnName)));
-                Optional<ColumnMapping> columnMapping = toColumnMapping(session, connection, typeHandle);
-                log.debug("Mapping data type of '%s' column '%s': %s mapped to %s", schemaTableName, columnName, typeHandle, columnMapping);
-                boolean nullable = (resultSet.getInt("NULLABLE") != columnNoNulls);
-                // Note: some databases (e.g. SQL Server) do not return column remarks/comment here.
-                Optional<String> comment = Optional.ofNullable(emptyToNull(resultSet.getString("REMARKS")));
-                // skip unsupported column types
-                columnMapping.ifPresent(mapping -> columns.add(JdbcColumnHandle.builder()
-                        .setColumnName(columnName)
-                        .setJdbcTypeHandle(typeHandle)
-                        .setColumnType(mapping.getType())
-                        .setNullable(nullable)
-                        .setComment(comment)
-                        .build()));
-                if (columnMapping.isEmpty()) {
-                    UnsupportedTypeHandling unsupportedTypeHandling = getUnsupportedTypeHandling(session);
-                    verify(
-                            unsupportedTypeHandling == IGNORE,
-                            "Unsupported type handling is set to %s, but toColumnMapping() returned empty for %s",
-                            unsupportedTypeHandling,
-                            typeHandle);
-                }
-            }
-            if (columns.isEmpty()) {
-                // A table may have no supported columns. In rare cases (e.g. PostgreSQL) a table might have no columns at all.
-                throw new TableNotFoundException(
-                        schemaTableName,
-                        format("Table '%s' has no supported columns (all %s columns are not supported)", schemaTableName, allColumns));
-            }
-            return ImmutableList.copyOf(columns);
+            return extractJdbcHandlesFromResultSet(session, tableHandle, connection, resultSet);
         }
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
         }
+    }
+
+    @Override
+    public List<JdbcColumnHandle> getPrimaryKeys(ConnectorSession session, JdbcTableHandle tableHandle)
+    {
+        checkArgument(tableHandle.isNamedRelation(), "Cannot get columns for %s", tableHandle);
+        verify(tableHandle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s".formatted(tableHandle));
+        verify(supportsMerge(), "The method should only be called if the connector declared supporting merge");
+
+        try (Connection connection = connectionFactory.openConnection(session);
+                ResultSet resultSet = getPrimaryKeys(tableHandle, connection.getMetaData())) {
+            return extractJdbcHandlesFromResultSet(session, tableHandle, connection, resultSet);
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    private List<JdbcColumnHandle> extractJdbcHandlesFromResultSet(ConnectorSession session, JdbcTableHandle tableHandle, Connection connection, ResultSet resultSet)
+            throws SQLException
+    {
+        SchemaTableName schemaTableName = tableHandle.getRequiredNamedRelation().getSchemaTableName();
+        RemoteTableName remoteTableName = tableHandle.getRequiredNamedRelation().getRemoteTableName();
+
+        Map<String, CaseSensitivity> caseSensitivityMapping = getCaseSensitivityForColumns(session, connection, tableHandle);
+        ImmutableList.Builder<JdbcColumnHandle> columnHandleBuilder = ImmutableList.builder();
+        int allColumns = 0;
+        while (resultSet.next()) {
+            // skip if table doesn't match expected
+            if (!(Objects.equals(remoteTableName, getRemoteTable(resultSet)))) {
+                continue;
+            }
+            allColumns++;
+            String columnName = resultSet.getString("COLUMN_NAME");
+            JdbcTypeHandle typeHandle = new JdbcTypeHandle(
+                    getInteger(resultSet, "DATA_TYPE").orElseThrow(() -> new IllegalStateException("DATA_TYPE is null")),
+                    Optional.ofNullable(resultSet.getString("TYPE_NAME")),
+                    getInteger(resultSet, "COLUMN_SIZE"),
+                    getInteger(resultSet, "DECIMAL_DIGITS"),
+                    Optional.empty(),
+                    Optional.ofNullable(caseSensitivityMapping.get(columnName)));
+            Optional<ColumnMapping> columnMapping = toColumnMapping(session, connection, typeHandle);
+            log.debug("Mapping data type of '%s' column '%s': %s mapped to %s", schemaTableName, columnName, typeHandle, columnMapping);
+            boolean nullable = (resultSet.getInt("NULLABLE") != columnNoNulls);
+            // Note: some databases (e.g. SQL Server) do not return column remarks/comment here.
+            Optional<String> comment = Optional.ofNullable(emptyToNull(resultSet.getString("REMARKS")));
+            // skip unsupported column types
+            columnMapping.ifPresent(mapping -> columnHandleBuilder.add(JdbcColumnHandle.builder()
+                    .setColumnName(columnName)
+                    .setJdbcTypeHandle(typeHandle)
+                    .setColumnType(mapping.getType())
+                    .setNullable(nullable)
+                    .setComment(comment)
+                    .build()));
+            if (columnMapping.isEmpty()) {
+                UnsupportedTypeHandling unsupportedTypeHandling = getUnsupportedTypeHandling(session);
+                verify(
+                        unsupportedTypeHandling == IGNORE,
+                        "Unsupported type handling is set to %s, but toColumnMapping() returned empty for %s",
+                        unsupportedTypeHandling,
+                        typeHandle);
+            }
+        }
+        List<JdbcColumnHandle> columns = columnHandleBuilder.build();
+        if (columns.isEmpty()) {
+            // A table may have no supported columns. In rare cases (e.g. PostgreSQL) a table might have no columns at all.
+            throw new TableNotFoundException(
+                    schemaTableName,
+                    "Table '%s' has no supported columns (all %s columns are not supported)".formatted(schemaTableName, allColumns));
+        }
+
+        return columns;
     }
 
     protected Map<String, CaseSensitivity> getCaseSensitivityForColumns(ConnectorSession session, Connection connection, JdbcTableHandle tableHandle)
@@ -375,6 +405,16 @@ public abstract class BaseJdbcClient
                 escapeObjectNameForMetadataQuery(remoteTableName.getSchemaName(), metadata.getSearchStringEscape()).orElse(null),
                 escapeObjectNameForMetadataQuery(remoteTableName.getTableName(), metadata.getSearchStringEscape()),
                 null);
+    }
+
+    protected ResultSet getPrimaryKeys(JdbcTableHandle tableHandle, DatabaseMetaData metadata)
+            throws SQLException
+    {
+        RemoteTableName remoteTableName = tableHandle.getRequiredNamedRelation().getRemoteTableName();
+        return metadata.getPrimaryKeys(
+                remoteTableName.getCatalogName().orElse(null),
+                remoteTableName.getSchemaName().orElse(null),
+                remoteTableName.getTableName());
     }
 
     @Override
@@ -929,6 +969,21 @@ public abstract class BaseJdbcClient
     @Override
     public void finishInsertTable(ConnectorSession session, JdbcOutputTableHandle handle, Set<Long> pageSinkIds)
     {
+        RemoteTableName targetTable = new RemoteTableName(
+                Optional.ofNullable(handle.getCatalogName()),
+                Optional.ofNullable(handle.getSchemaName()),
+                handle.getTableName());
+        String columns = handle.getColumnNames().stream()
+                .map(this::quoted)
+                .collect(joining(", "));
+
+        // last args will be handled in the finish operation
+        String insertSql = "INSERT INTO %s (%s)".formatted(postProcessInsertTableNameClause(session, quoted(targetTable)), columns) + " %s";
+        finishOperation(session, handle, pageSinkIds, insertSql);
+    }
+
+    private void finishOperation(ConnectorSession session, JdbcOutputTableHandle handle, Set<Long> pageSinkIds, String operateSql)
+    {
         if (isNonTransactionalInsert(session)) {
             checkState(handle.getTemporaryTableName().isEmpty(), "Unexpected use of temporary table when non transactional inserts are enabled");
             return;
@@ -938,10 +993,6 @@ public abstract class BaseJdbcClient
                 Optional.ofNullable(handle.getCatalogName()),
                 Optional.ofNullable(handle.getSchemaName()),
                 handle.getTemporaryTableName().orElseThrow());
-        RemoteTableName targetTable = new RemoteTableName(
-                Optional.ofNullable(handle.getCatalogName()),
-                Optional.ofNullable(handle.getSchemaName()),
-                handle.getTableName());
 
         // We conditionally create more than the one table, so keep a list of the tables that need to be dropped.
         Closer closer = Closer.create();
@@ -952,23 +1003,18 @@ public abstract class BaseJdbcClient
             String columns = handle.getColumnNames().stream()
                     .map(this::quoted)
                     .collect(joining(", "));
-
-            String insertSql = format("INSERT INTO %s (%s) SELECT %s FROM %s temp_table",
-                    postProcessInsertTableNameClause(session, quoted(targetTable)),
-                    columns,
-                    columns,
-                    quoted(temporaryTable));
+            String tempTableData = "SELECT %s FROM %s temp_table".formatted(columns, quoted(temporaryTable));
 
             if (handle.getPageSinkIdColumnName().isPresent()) {
                 RemoteTableName pageSinkTable = constructPageSinkIdsTable(session, connection, handle, pageSinkIds, closer);
 
-                insertSql += format(" WHERE EXISTS (SELECT 1 FROM %s page_sink_table WHERE page_sink_table.%s = temp_table.%s)",
+                tempTableData += format(" WHERE EXISTS (SELECT 1 FROM %s page_sink_table WHERE page_sink_table.%s = temp_table.%s)",
                         quoted(pageSinkTable),
                         handle.getPageSinkIdColumnName().get(),
                         handle.getPageSinkIdColumnName().get());
             }
 
-            execute(session, connection, insertSql);
+            execute(session, connection, operateSql.formatted(tempTableData));
         }
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
@@ -981,6 +1027,37 @@ public abstract class BaseJdbcClient
                 throw new TrinoException(JDBC_ERROR, e);
             }
         }
+    }
+
+    @Override
+    public JdbcOutputTableHandle beginDeleteTableForMerge(ConnectorSession session, JdbcTableHandle tableHandle)
+    {
+        verify(shouldUseFaultTolerantExecution(session));
+        return beginInsertTable(session, tableHandle, getPrimaryKeys(session, tableHandle));
+    }
+
+    protected String getConjunctsBetweenTargetAndTemporaryTable(JdbcOutputTableHandle handle)
+    {
+        StringBuilder conjuncts = new StringBuilder();
+        String conjunct = "merge_target.%s = temp.%$1s";
+        for (String column : handle.getColumnNames()) {
+            conjuncts.append(conjunct.formatted(column));
+        }
+        return conjuncts.toString();
+    }
+
+    @Override
+    public void finishDeleteTableForMerge(ConnectorSession session, JdbcOutputTableHandle handle, Set<Long> pageSinkIds)
+    {
+        verify(shouldUseFaultTolerantExecution(session));
+        RemoteTableName targetTable = new RemoteTableName(
+                Optional.ofNullable(handle.getCatalogName()),
+                Optional.ofNullable(handle.getSchemaName()),
+                handle.getTableName());
+        String deleteCondition = "WHERE EXISTS (SELECT 1 FROM (%s) temp WHERE " + getConjunctsBetweenTargetAndTemporaryTable(handle) + ")";
+
+        String deleteSql = "DELETE FROM %s merge_target ".formatted(postProcessInsertTableNameClause(session, quoted(targetTable))) + deleteCondition;
+        finishOperation(session, handle, pageSinkIds, deleteSql);
     }
 
     protected String postProcessInsertTableNameClause(ConnectorSession session, String tableName)
@@ -1137,6 +1214,33 @@ public abstract class BaseJdbcClient
                         .map(WriteFunction::getBindExpression)
                         .collect(joining(",")),
                 hasPageSinkIdColumn ? ", ?" : "");
+    }
+
+    @Override
+    public String buildMergeRowIdConjuncts(ConnectorSession session, List<String> mergeRowIdFieldNames, List<Type> mergeRowIdFieldTypes)
+    {
+        List<WriteFunction> mergeRowIdColumnWriters = mergeRowIdFieldTypes.stream()
+                .map(type -> {
+                    WriteMapping writeMapping = toWriteMapping(session, type);
+                    WriteFunction writeFunction = writeMapping.getWriteFunction();
+                    verify(
+                            type.getJavaType() == writeFunction.getJavaType(),
+                            "Trino type %s is not compatible with write function %s accepting %s",
+                            type,
+                            writeFunction,
+                            writeFunction.getJavaType());
+                    return writeMapping;
+                })
+                .map(WriteMapping::getWriteFunction)
+                .collect(toImmutableList());
+        verify(!mergeRowIdColumnWriters.isEmpty() && mergeRowIdFieldNames.size() == mergeRowIdColumnWriters.size());
+
+        ImmutableList.Builder<String> conjunctsBuilder = ImmutableList.builder();
+        for (int i = 0; i < mergeRowIdFieldNames.size(); i++) {
+            conjunctsBuilder.add(quoted(mergeRowIdFieldNames.get(i)) + " = " + mergeRowIdColumnWriters.get(i).getBindExpression());
+        }
+
+        return Joiner.on(" AND ").join(conjunctsBuilder.build());
     }
 
     @Override
@@ -1332,6 +1436,12 @@ public abstract class BaseJdbcClient
         return Optional.empty();
     }
 
+    @Override
+    public boolean supportsMerge()
+    {
+        return false;
+    }
+
     private Function<String, String> applyLimit(long limit)
     {
         return query -> limitFunction()
@@ -1520,7 +1630,7 @@ public abstract class BaseJdbcClient
         }
     }
 
-    private static ColumnMetadata getPageSinkIdColumn(List<String> otherColumnNames)
+    protected ColumnMetadata getPageSinkIdColumn(List<String> otherColumnNames)
     {
         // While it's unlikely this column name will collide with client table columns,
         // guarantee it will not by appending a deterministic suffix to it.
@@ -1537,5 +1647,60 @@ public abstract class BaseJdbcClient
     public RemoteIdentifiers getRemoteIdentifiers(Connection connection)
     {
         return jdbcRemoteIdentifiersFactory.createJdbcRemoteIdentifies(connection);
+    }
+
+    @Override
+    public JdbcTableHandle updatedScanColumnsForMerge(ConnectorSession session, ConnectorTableHandle table, Optional<List<JdbcColumnHandle>> originalColumns, JdbcColumnHandle mergeRowIdColumnHandle)
+    {
+        JdbcTableHandle tableHandle = (JdbcTableHandle) table;
+        if (originalColumns.isEmpty()) {
+            return tableHandle;
+        }
+        List<JdbcColumnHandle> scanColumnHandles = originalColumns.get();
+        checkArgument(!scanColumnHandles.isEmpty(), "Scan columns should not empty");
+        checkArgument(tryFind(scanColumnHandles.iterator(), column -> MERGE_ROW_ID.equalsIgnoreCase(column.getColumnName())).isPresent(), "Merge row id column must exist in original columns");
+
+        return new JdbcTableHandle(
+                tableHandle.getRelationHandle(),
+                tableHandle.getConstraint(),
+                tableHandle.getConstraintExpressions(),
+                tableHandle.getSortOrder(),
+                tableHandle.getLimit(),
+                Optional.of(getUpdatedScanColumnHandles(session, tableHandle, scanColumnHandles, mergeRowIdColumnHandle)),
+                tableHandle.getOtherReferencedTables(),
+                tableHandle.getNextSyntheticColumnId(),
+                tableHandle.getAuthorization(),
+                tableHandle.getUpdateAssignments());
+    }
+
+    protected List<JdbcColumnHandle> getUpdatedScanColumnHandles(ConnectorSession session, JdbcTableHandle tableHandle, List<JdbcColumnHandle> scanColumnHandles, JdbcColumnHandle mergeRowIdColumnHandle)
+    {
+        RowType columnType = (RowType) mergeRowIdColumnHandle.getColumnType();
+        List<JdbcColumnHandle> primaryKeyColumnHandles = getPrimaryKeys(session, tableHandle);
+        Set<String> mergeRowIdFieldNames = columnType.getFields().stream()
+                .map(RowType.Field::getName)
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .collect(toImmutableSet());
+        Set<String> primaryKeyColumnNames = primaryKeyColumnHandles.stream()
+                .map(JdbcColumnHandle::getColumnName)
+                .collect(toImmutableSet());
+        checkArgument(mergeRowIdFieldNames.containsAll(primaryKeyColumnNames), "Merge row id fields should contains all primary keys");
+
+        ImmutableList.Builder<JdbcColumnHandle> columnHandleBuilder = ImmutableList.builder();
+        scanColumnHandles.stream()
+                .filter(jdbcColumnHandle -> !MERGE_ROW_ID.equalsIgnoreCase(jdbcColumnHandle.getColumnName()))
+                .forEach(columnHandleBuilder::add);
+
+        // Add merge row id fields
+        for (JdbcColumnHandle columnHandle : primaryKeyColumnHandles) {
+            String columnName = columnHandle.getColumnName();
+
+            if (!tryFind(scanColumnHandles.iterator(), column -> column.getColumnName().equalsIgnoreCase(columnName)).isPresent()) {
+                columnHandleBuilder.add(columnHandle);
+            }
+        }
+
+        return columnHandleBuilder.build();
     }
 }

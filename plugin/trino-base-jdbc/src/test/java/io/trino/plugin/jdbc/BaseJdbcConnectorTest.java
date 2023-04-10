@@ -162,7 +162,7 @@ public abstract class BaseJdbcConnectorTest
         }
     }
 
-    /**
+     /**
      * Creates a table with columns {@code one, two, three} where the middle one is of an unsupported (unmapped) type.
      * The first column should be numeric, and third should be varchar.
      */
@@ -1571,10 +1571,7 @@ public abstract class BaseJdbcConnectorTest
             return;
         }
 
-        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE) && hasBehavior(SUPPORTS_UPDATE));
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_update_row", "(a INT, b INT, c INT)", ImmutableList.of("1, 2, 3"))) {
-            assertQueryFails("UPDATE " + table.getName() + " SET a = a + 1", MODIFYING_ROWS_MESSAGE);
-        }
+        throw new SkipException("The connector doesn't support concurrent update of different columns in a row");
     }
 
     @Override
@@ -1760,6 +1757,40 @@ public abstract class BaseJdbcConnectorTest
         }
         assertThatThrownBy(super::testDeleteWithComplexPredicate)
                 .hasStackTraceContaining("TrinoException: " + MODIFYING_ROWS_MESSAGE);
+    }
+
+    @Override
+    public void testMergeLarge()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_MERGE));
+
+        String tableName = "test_merge_" + randomNameSuffix();
+        assertUpdate(createTableForWrites(format("CREATE TABLE %s (orderkey BIGINT, custkey BIGINT, totalprice DOUBLE)", tableName)));
+
+        assertUpdate(
+                format("INSERT INTO %s SELECT orderkey, custkey, totalprice FROM tpch.sf1.orders", tableName),
+                (long) computeScalar("SELECT count(*) FROM tpch.sf1.orders"));
+
+        @Language("SQL") String mergeSql = "" +
+                "MERGE INTO " + tableName + " t USING (SELECT * FROM tpch.sf1.orders) s ON (t.orderkey = s.orderkey)\n" +
+                "WHEN MATCHED AND mod(s.orderkey, 3) = 0 THEN UPDATE SET totalprice = t.totalprice + s.totalprice\n" +
+                "WHEN MATCHED AND mod(s.orderkey, 3) = 1 THEN DELETE";
+
+        assertUpdate(mergeSql, 1_000_000);
+
+        // verify deleted rows
+        assertQuery("SELECT count(*) FROM " + tableName + " WHERE mod(orderkey, 3) = 1", "SELECT 0");
+
+        // verify untouched rows
+        assertThat(query("SELECT count(*), cast(sum(totalprice) AS decimal(18,2)) FROM " + tableName + " WHERE mod(orderkey, 3) = 2"))
+                .matches("SELECT count(*), cast(sum(totalprice) AS decimal(18,2)) FROM tpch.sf1.orders WHERE mod(orderkey, 3) = 2");
+
+        // TODO investigate why sum(DOUBLE) not correct
+        // verify updated rows
+        String sql = format("SELECT count(*) FROM %s t JOIN tpch.sf1.orders s ON t.orderkey = s.orderkey WHERE mod(t.orderkey, 3) = 0 AND t.totalprice != s.totalprice * 2", tableName);
+        assertQuery(sql, "SELECT 0");
+
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Override

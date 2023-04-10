@@ -32,6 +32,7 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitSource;
+import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
@@ -198,6 +199,12 @@ public class CachingJdbcClient
     }
 
     @Override
+    public List<JdbcColumnHandle> getPrimaryKeys(ConnectorSession session, JdbcTableHandle tableHandle)
+    {
+        return delegate.getPrimaryKeys(session, tableHandle);
+    }
+
+    @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
         return delegate.toColumnMapping(session, connection, typeHandle);
@@ -336,6 +343,12 @@ public class CachingJdbcClient
     }
 
     @Override
+    public boolean supportsMerge()
+    {
+        return delegate.supportsMerge();
+    }
+
+    @Override
     public Optional<JdbcTableHandle> getTableHandle(ConnectorSession session, SchemaTableName schemaTableName)
     {
         TableHandlesByNameCacheKey key = new TableHandlesByNameCacheKey(getIdentityKey(session), schemaTableName);
@@ -385,6 +398,19 @@ public class CachingJdbcClient
     }
 
     @Override
+    public JdbcOutputTableHandle beginDeleteTableForMerge(ConnectorSession session, JdbcTableHandle tableHandle)
+    {
+        return delegate.beginDeleteTableForMerge(session, tableHandle);
+    }
+
+    @Override
+    public void finishDeleteTableForMerge(ConnectorSession session, JdbcOutputTableHandle handle, Set<Long> pageSinkIds)
+    {
+        delegate.finishDeleteTableForMerge(session, handle, pageSinkIds);
+        onDataChanged(new SchemaTableName(handle.getSchemaName(), handle.getTableName()));
+    }
+
+    @Override
     public void dropTable(ConnectorSession session, JdbcTableHandle jdbcTableHandle)
     {
         delegate.dropTable(session, jdbcTableHandle);
@@ -407,6 +433,12 @@ public class CachingJdbcClient
     public String buildInsertSql(JdbcOutputTableHandle handle, List<WriteFunction> columnWriters)
     {
         return delegate.buildInsertSql(handle, columnWriters);
+    }
+
+    @Override
+    public String buildMergeRowIdConjuncts(ConnectorSession session, List<String> mergeRowIdFieldNames, List<Type> mergeRowIdFieldTypes)
+    {
+        return delegate.buildMergeRowIdConjuncts(session, mergeRowIdFieldNames, mergeRowIdFieldTypes);
     }
 
     @Override
@@ -615,6 +647,12 @@ public class CachingJdbcClient
     {
         delegate.truncateTable(session, handle);
         onDataChanged(handle.getRequiredNamedRelation().getSchemaTableName());
+    }
+
+    @Override
+    public JdbcTableHandle updatedScanColumnsForMerge(ConnectorSession session, ConnectorTableHandle table, Optional<List<JdbcColumnHandle>> originalColumns, JdbcColumnHandle mergeRowIdColumnHandle)
+    {
+        return delegate.updatedScanColumnsForMerge(session, table, originalColumns, mergeRowIdColumnHandle);
     }
 
     @Managed

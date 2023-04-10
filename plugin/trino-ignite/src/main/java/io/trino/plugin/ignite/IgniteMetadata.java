@@ -19,6 +19,7 @@ import io.airlift.slice.Slice;
 import io.trino.plugin.jdbc.DefaultJdbcMetadata;
 import io.trino.plugin.jdbc.JdbcClient;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
+import io.trino.plugin.jdbc.JdbcMergeTableHandle;
 import io.trino.plugin.jdbc.JdbcNamedRelationHandle;
 import io.trino.plugin.jdbc.JdbcQueryEventListener;
 import io.trino.plugin.jdbc.JdbcTableHandle;
@@ -93,6 +94,9 @@ public class IgniteMetadata
         ImmutableList.Builder<JdbcTypeHandle> columnJdbcTypeHandles = ImmutableList.builder();
         for (ColumnHandle column : columns) {
             JdbcColumnHandle columnHandle = (JdbcColumnHandle) column;
+            if (columnHandle.getColumnName().equalsIgnoreCase(IGNITE_DUMMY_ID)) {
+                continue;
+            }
             columnNames.add(columnHandle.getColumnName());
             columnTypes.add(columnHandle.getColumnType());
             columnJdbcTypeHandles.add(columnHandle.getJdbcTypeHandle());
@@ -112,6 +116,13 @@ public class IgniteMetadata
     public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         return Optional.empty();
+    }
+
+    @Override
+    public IgniteMergeTableHandle beginMerge(ConnectorSession session, ConnectorTableHandle tableHandle, RetryMode retryMode)
+    {
+        JdbcMergeTableHandle mergeTableHandle = (JdbcMergeTableHandle) super.beginMerge(session, tableHandle, retryMode);
+        return new IgniteMergeTableHandle(mergeTableHandle.getTableHandle(), (IgniteOutputTableHandle) mergeTableHandle.getOutputTableHandle(), mergeTableHandle.mergeRowIdColumnHandle());
     }
 
     @Override

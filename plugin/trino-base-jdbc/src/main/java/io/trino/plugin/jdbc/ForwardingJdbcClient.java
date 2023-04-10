@@ -20,6 +20,7 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitSource;
+import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
@@ -104,6 +105,12 @@ public abstract class ForwardingJdbcClient
     public List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle)
     {
         return delegate().getColumns(session, tableHandle);
+    }
+
+    @Override
+    public List<JdbcColumnHandle> getPrimaryKeys(ConnectorSession session, JdbcTableHandle tableHandle)
+    {
+        return delegate().getPrimaryKeys(session, tableHandle);
     }
 
     @Override
@@ -245,6 +252,18 @@ public abstract class ForwardingJdbcClient
     }
 
     @Override
+    public JdbcOutputTableHandle beginDeleteTableForMerge(ConnectorSession session, JdbcTableHandle tableHandle)
+    {
+        return delegate().beginDeleteTableForMerge(session, tableHandle);
+    }
+
+    @Override
+    public void finishDeleteTableForMerge(ConnectorSession session, JdbcOutputTableHandle handle, Set<Long> pageSinkIds)
+    {
+        delegate().finishDeleteTableForMerge(session, handle, pageSinkIds);
+    }
+
+    @Override
     public void dropTable(ConnectorSession session, JdbcTableHandle jdbcTableHandle)
     {
         delegate().dropTable(session, jdbcTableHandle);
@@ -316,6 +335,12 @@ public abstract class ForwardingJdbcClient
     public boolean isLimitGuaranteed(ConnectorSession session)
     {
         return delegate().isLimitGuaranteed(session);
+    }
+
+    @Override
+    public boolean supportsMerge()
+    {
+        return delegate().supportsMerge();
     }
 
     @Override
@@ -449,5 +474,16 @@ public abstract class ForwardingJdbcClient
     public OptionalInt getMaxWriteParallelism(ConnectorSession session)
     {
         return delegate().getMaxWriteParallelism(session);
+    }
+
+    public JdbcTableHandle updatedScanColumnsForMerge(ConnectorSession session, ConnectorTableHandle table, Optional<List<JdbcColumnHandle>> originalColumns, JdbcColumnHandle mergeRowIdColumnHandle)
+    {
+        return delegate().updatedScanColumnsForMerge(session, table, originalColumns, mergeRowIdColumnHandle);
+    }
+
+    @Override
+    public String buildMergeRowIdConjuncts(ConnectorSession session, List<String> mergeRowIdFieldNames, List<Type> mergeRowIdFieldTypes)
+    {
+        return delegate().buildMergeRowIdConjuncts(session, mergeRowIdFieldNames, mergeRowIdFieldTypes);
     }
 }

@@ -56,6 +56,8 @@ public abstract class BaseOracleFailureRecoveryTest
                         .put("connection-url", oracleServer.getJdbcUrl())
                         .put("connection-user", TEST_USER)
                         .put("connection-password", TEST_PASS)
+                        // Set not use pool explicitly, avoid the test fail due to reaching the connection pool limitation
+                        .put("oracle.connection-pool.enabled", "false")
                         .buildOrThrow(),
                 requiredTpchTables,
                 runner -> {
@@ -71,6 +73,12 @@ public abstract class BaseOracleFailureRecoveryTest
     public void testParallel(Runnable runnable)
     {
         super.testParallel(runnable);
+    }
+
+    @Override
+    protected boolean supportMerge()
+    {
+        return true;
     }
 
     @Override

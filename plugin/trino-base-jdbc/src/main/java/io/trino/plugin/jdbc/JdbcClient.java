@@ -21,6 +21,7 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitSource;
+import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
@@ -64,6 +65,8 @@ public interface JdbcClient
     JdbcProcedureHandle getProcedureHandle(ConnectorSession session, ProcedureQuery procedureQuery);
 
     List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle);
+
+    List<JdbcColumnHandle> getPrimaryKeys(ConnectorSession session, JdbcTableHandle tableHandle);
 
     Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle);
 
@@ -144,6 +147,8 @@ public interface JdbcClient
 
     boolean isLimitGuaranteed(ConnectorSession session);
 
+    boolean supportsMerge();
+
     default Optional<String> getTableComment(ResultSet resultSet)
             throws SQLException
     {
@@ -185,6 +190,10 @@ public interface JdbcClient
 
     void finishInsertTable(ConnectorSession session, JdbcOutputTableHandle handle, Set<Long> pageSinkIds);
 
+    JdbcOutputTableHandle beginDeleteTableForMerge(ConnectorSession session, JdbcTableHandle tableHandle);
+
+    void finishDeleteTableForMerge(ConnectorSession session, JdbcOutputTableHandle handle, Set<Long> pageSinkIds);
+
     void dropTable(ConnectorSession session, JdbcTableHandle jdbcTableHandle);
 
     void rollbackCreateTable(ConnectorSession session, JdbcOutputTableHandle handle);
@@ -192,6 +201,8 @@ public interface JdbcClient
     boolean supportsRetries();
 
     String buildInsertSql(JdbcOutputTableHandle handle, List<WriteFunction> columnWriters);
+
+    String buildMergeRowIdConjuncts(ConnectorSession session, List<String> mergeRowIdFieldNames, List<Type> mergeRowIdFieldTypes);
 
     Connection getConnection(ConnectorSession session, JdbcOutputTableHandle handle)
             throws SQLException;
@@ -239,4 +250,6 @@ public interface JdbcClient
     OptionalLong update(ConnectorSession session, JdbcTableHandle handle);
 
     OptionalInt getMaxWriteParallelism(ConnectorSession session);
+
+    JdbcTableHandle updatedScanColumnsForMerge(ConnectorSession session, ConnectorTableHandle table, Optional<List<JdbcColumnHandle>> originalColumns, JdbcColumnHandle mergeRowIdColumnHandle);
 }

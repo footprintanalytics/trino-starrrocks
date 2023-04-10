@@ -37,6 +37,12 @@ public abstract class BasePostgresFailureRecoveryTest
     }
 
     @Override
+    protected boolean supportMerge()
+    {
+        return true;
+    }
+
+    @Override
     protected QueryRunner createQueryRunner(
             List<TpchTable<?>> requiredTpchTables,
             Map<String, String> configProperties,
@@ -56,6 +62,7 @@ public abstract class BasePostgresFailureRecoveryTest
                 });
     }
 
+    // TODO (https://github.com/trinodb/trino/issues/17003) Remove the test once the issue has been fixed
     @Override
     protected void testUpdateWithSubquery()
     {
