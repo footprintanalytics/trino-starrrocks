@@ -2716,7 +2716,7 @@ public class IcebergMetadata
                         originalHandle.getAnalyzeColumns()),
                 handle -> {
                     Table icebergTable = catalog.loadTable(session, handle.getSchemaTableName());
-                    return TableStatisticsReader.getTableStatistics(typeManager, session, handle, icebergTable);
+                    return TableStatisticsReader.getTableStatistics(typeManager, session, handle, icebergTable, fileSystemFactory);
                 });
     }
 
