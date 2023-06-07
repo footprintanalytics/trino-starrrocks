@@ -13,12 +13,16 @@
  */
 package io.trino.tests.product.iceberg;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.trino.tempto.ProductTest;
 import io.trino.tempto.assertions.QueryAssert.Row;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
+import java.sql.JDBCType;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -32,6 +36,10 @@ import static io.trino.tests.product.utils.QueryExecutors.onHive;
 import static io.trino.tests.product.utils.QueryExecutors.onSpark;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
+import static java.sql.JDBCType.ARRAY;
+import static java.sql.JDBCType.INTEGER;
+import static java.sql.JDBCType.JAVA_OBJECT;
+import static java.sql.JDBCType.STRUCT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -109,6 +117,38 @@ public class TestIcebergProcedureCalls
         assertThat(onSpark().executeQuery("SELECT * FROM " + sparkTableName)).containsOnly(expected);
 
         onTrino().executeQuery("DROP TABLE " + icebergTableName);
+    }
+
+    @Test(groups = {ICEBERG, PROFILE_SPECIFIC_TESTS}, dataProvider = "fileFormats")
+    public void testMigrateHiveTableWithComplexType(String fileFormat)
+            throws JsonProcessingException
+    {
+        String tableName = "test_migrate_complex_" + randomNameSuffix();
+        String hiveTableName = "hive.default." + tableName;
+        String icebergTableName = "iceberg.default." + tableName;
+        String sparkTableName = "iceberg_test.default." + tableName;
+        onTrino().executeQuery("DROP TABLE IF EXISTS " + hiveTableName);
+        onTrino().executeQuery("CREATE TABLE " + hiveTableName + " WITH (format='" + fileFormat + "') AS SELECT 1 x, array[2, 3] a, CAST(map(array['key'], array['value']) AS map(varchar, varchar)) b, CAST(row(1) AS row(d integer)) c");
+
+        onTrino().executeQuery("CALL iceberg.system.migrate('default', '" + tableName + "')");
+
+        List<Object> expectedRowValue = ImmutableList.of(1, ImmutableList.of(2, 3), ImmutableMap.of("key", "value"), ImmutableMap.of("d", 1));
+
+        List<JDBCType> trinoExpectedColumnTypes = ImmutableList.of(INTEGER, ARRAY, JAVA_OBJECT, JAVA_OBJECT);
+        String trinoExpectedRowValueString = expectedRowValue.toString();
+        assertThat(onTrino().executeQuery("SELECT * FROM " + icebergTableName))
+                .hasRowsCount(1)
+                .matches(queryResult -> queryResult.getColumnTypes().equals(trinoExpectedColumnTypes), "Complex type columns type mismatch in Trino")
+                .matches(queryResult -> queryResult.row(0).toString().equals(trinoExpectedRowValueString), "Complex type columns value mismatch in Trino");
+
+        List<JDBCType> sparkExpectedColumnTypes = ImmutableList.of(INTEGER, ARRAY, JAVA_OBJECT, STRUCT);
+        String sparkExpectedRowValueString = new ObjectMapper().writeValueAsString(expectedRowValue);
+        assertThat(onSpark().executeQuery("SELECT * FROM " + sparkTableName))
+                .hasRowsCount(1)
+                .matches(queryResult -> queryResult.getColumnTypes().equals(sparkExpectedColumnTypes), "Complex type columns type mismatch in Spark")
+                .matches(queryResult -> queryResult.row(0).toString().replaceAll(" ", "").equals(sparkExpectedRowValueString), "Complex type columns value mismatch in Spark");
+
+        onTrino().executeQuery("DROP TABLE IF EXISTS " + icebergTableName);
     }
 
     @Test(groups = {ICEBERG, PROFILE_SPECIFIC_TESTS})
