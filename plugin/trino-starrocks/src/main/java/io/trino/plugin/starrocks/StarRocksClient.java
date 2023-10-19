@@ -58,6 +58,7 @@ import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
+import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 import org.jdbi.v3.core.Handle;
@@ -70,6 +71,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -107,6 +109,8 @@ import static io.trino.plugin.jdbc.StandardColumnMappings.realWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.timestampReadFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.timestampWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
@@ -124,6 +128,7 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
+import static io.trino.spi.type.TimestampType.createTimestampType;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Math.max;
@@ -143,6 +148,8 @@ public class StarRocksClient
 
     private final AggregateFunctionRewriter<JdbcExpression, ?> aggregateFunctionRewriter;
     private final ConnectorExpressionRewriter<ParameterizedExpression> connectorExpressionRewriter;
+    private static final int ZERO_PRECISION_TIMESTAMP_COLUMN_SIZE = 19;
+    private static final int MAX_SUPPORTED_DATE_TIME_PRECISION = 6;
 
     @Inject
     public StarRocksClient(
@@ -309,6 +316,40 @@ public class StarRocksClient
         }
     }
 
+    private static LongReadFunction mySqlTimestampReadFunction(TimestampType timestampType)
+    {
+        return new LongReadFunction()
+        {
+            private final LongReadFunction delegate = timestampReadFunction(timestampType);
+
+            @Override
+            public boolean isNull(ResultSet resultSet, int columnIndex)
+                    throws SQLException
+            {
+                // super calls ResultSet#getObject(), which for TIMESTAMP type returns java.sql.Timestamp, for which the conversion can fail if the value isn't a valid instant in server's time zone.
+                resultSet.getObject(columnIndex, LocalDateTime.class);
+                return resultSet.wasNull();
+            }
+
+            @Override
+            public long readLong(ResultSet resultSet, int columnIndex)
+                    throws SQLException
+            {
+                return delegate.readLong(resultSet, columnIndex);
+            }
+        };
+    }
+
+    private static int getTimestampPrecision(int timestampColumnSize)
+    {
+        if (timestampColumnSize == ZERO_PRECISION_TIMESTAMP_COLUMN_SIZE) {
+            return 0;
+        }
+        int timestampPrecision = timestampColumnSize - ZERO_PRECISION_TIMESTAMP_COLUMN_SIZE - 1;
+        verify(1 <= timestampPrecision && timestampPrecision <= MAX_SUPPORTED_DATE_TIME_PRECISION, "Unexpected timestamp precision %s calculated from timestamp column size %s", timestampPrecision, timestampColumnSize);
+        return timestampPrecision;
+    }
+
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
@@ -364,6 +405,14 @@ public class StarRocksClient
                         DATE,
                         starRocksDateReadFunctionUsingLocalDate(),
                         starRocksDateWriteFunctionUsingLocalDate()));
+
+            case Types.TIMESTAMP:
+                TimestampType timestampType = createTimestampType(getTimestampPrecision(typeHandle.getColumnSize().orElse(23)));
+                checkArgument(timestampType.getPrecision() <= TimestampType.MAX_SHORT_PRECISION, "Precision is out of range: %s", timestampType.getPrecision());
+                return Optional.of(ColumnMapping.longMapping(
+                        timestampType,
+                        mySqlTimestampReadFunction(timestampType),
+                        timestampWriteFunction(timestampType)));
         }
 
         return Optional.empty();
